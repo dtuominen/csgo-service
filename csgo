@@ -1,0 +1,140 @@
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          csgo
+# Required-Start:    $remote_fs $syslog $network
+# Required-Stop:     $remote_fs $syslog $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: starts the CS:GO dedicated server
+# Description:       Script to simulate daemonizing srcds. It doesn't truly run
+#                    as a daemon, instead this script runs it inside a screen
+#                    session.
+### END INIT INFO
+
+# Copyright (c) 2013 Astroman Technologies LLC
+# Author: Peter Rowlands <peter@pmrowla.com>
+
+### BEGIN CONFIGURATION
+USER="srcds"
+IP=""
+PORT="27015"
+
+DIR_STEAMCMD="/opt/srcds/steamcmd"
+STEAM_LOGIN="anonymous"
+STEAM_PASSWORD=""
+STEAM_RUNSCRIPT="${DIR_STEAMCMD}/runscript_${DESC}"
+
+DIR_ROOT="/opt/srcds/csgo-ds"
+DIR_GAME="${DIR_ROOT}/csgo"
+DIR_LOGS="${DIR_GAME}/logs"
+
+UPDATE_LOG="${DIR_LOGS}/update_`date +%Y%m%d`.log"
+UPDATE_EMAIL="monitoring@goonpug.com"
+UPDATE_RETRY=3
+
+# Recommended way of specifying workshop collections is to add all of the
+# GoonPUG collections (match, warmup and playtesting) to the
+# subscribed_collections.txt file in your csgo directory
+#WORKSHOP_COLLECTION_ID="141468891" # http://steamcommunity.com/sharedfiles/filedetails/?id=125499818
+#WORKSHOP_START_MAP="122443683" # http://steamcommunity.com/sharedfiles/filedetails/?id=125488374
+
+PARAMS="-game csgo -console -usercon -secure -autoupdate -steam_dir ${DIR_STEAMCMD} -steamcmd_script ${STEAM_RUNSCRIPT} -tickrate 128 +tv_enable 1 +sv_pure 1 +hostport ${PORT} +ip ${IP} +net_public_adr ${IP} +sv_lan 0 +sv_hibernate_when_empty 1 +game_type 0 +game_mode 1"
+
+### END CONFIGURATION
+# No edits necessary beyond this line
+
+DESC="csgo"
+NAME="SRCDS"
+DAEMON="srcds_run"
+
+PARAM_UPDATE="+login ${STEAM_LOGIN} ${STEAM_PASSWORD} +force_install_dir ${DIR_ROOT} +app_update 740 validate +quit"
+
+# Do not change this path
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+
+if [ ! -x `which tmux` ]; then echo "ERROR: You need tmux for this script (try apt-get install tmux)"; exit 1; fi
+
+function start {
+
+    # Create runscript file for autoupdate
+    echo "Create runscript file '$STEAM_RUNSCRIPT' for autoupdate..."
+    cd $DIR_STEAMCMD
+    echo "login $STEAM_LOGIN $STEAM_PASSWORD" > $STEAM_RUNSCRIPT
+    echo "force_install_dir $DIR_ROOT" >> $STEAM_RUNSCRIPT
+    echo "app_update 740" >> $STEAM_RUNSCRIPT
+    echo "quit" >> $STEAM_RUNSCRIPT
+    chown $USER $STEAM_RUNSCRIPT
+    chmod 600 $STEAM_RUNSCRIPT
+
+    # Generated misc args
+    GENERATED_ARGS="";
+    API_AUTHORIZATION_KEY="`cat $DIR_GAME/webapi_authkey.txt`"
+    if [ ! -z "${API_AUTHORIZATION_KEY}" ]
+    then
+        GENERATED_ARGS="-authkey ${API_AUTHORIZATION_KEY}"
+        if [ ! -z "${WORKSHOP_COLLECTION_ID}" ]; then GENERATED_ARGS="${GENERATED_ARGS} +host_workshop_collection ${WORKSHOP_COLLECTION_ID}"; fi
+        if [ ! -z "${WORKSHOP_START_MAP}" ]; then GENERATED_ARGS="${GENERATED_ARGS} +workshop_start_map ${WORKSHOP_START_MAP}"; fi
+    fi
+
+    # Start game
+    PARAMS="${PARAMS} ${GENERATED_ARGS}"
+    echo "Start command : $PARAMS"
+
+    su $USER -l -c "tmux new -d -s $NAME '$DAEMON $PARAMS'"
+}
+
+case "$1" in
+    start)
+        echo "Starting $DESC:"
+        if [ -e $DIR_ROOT ]; then
+            cd $DIR_ROOT
+            start
+            echo " ... done."
+        else
+            echo "No such directory: $DIR!"
+        fi
+        ;;
+
+    stop)
+        if su $USER -l -c "tmux ls" |grep $NAME; then
+            echo -n "Stopping $DESC:"
+            su $USER -l -c "tmux kill-session -t $NAME"
+            echo " ... done."
+        else
+            echo "Couldn't find a running $DESC"
+        fi
+        ;;
+
+    restart)
+        $SELF stop
+        $SELF start
+        ;;
+
+    status)
+        # Check whether there's a "srcds" process
+        ps aux | grep -v grep | grep srcds_r > /dev/null
+        CHECK=$?
+        [ $CHECK -eq 0 ] && echo "SRCDS is UP" || echo "SRCDS is DOWN"
+        ;;
+
+    console)
+        if su $USER -l -c "tmux ls" |grep $NAME; then
+            su $USER -l -c "tmux attach -t $NAME"
+        else
+            echo "Couldn't find a running $DESC"
+        fi
+        ;;
+
+    update)
+        echo "Updating $DESC..."
+        update
+        ;;
+
+    *)
+        echo "Usage: $0 {start|stop|restart|status|console}"
+        exit 1
+        ;;
+
+esac
+
+exit 0
